@@ -74,10 +74,11 @@ class GoogleSheetMemberStore:
         )
 
     def _worksheet(self) -> gspread.Worksheet:
-        raw = str(self._settings.google_service_account_file_wc)
-        if raw.strip().startswith("{"):
-            client = gspread.service_account_from_dict(json.loads(raw))
-        else:
+        raw = self._settings.google_service_account_file_wc
+        try:
+            info = json.loads(raw)
+            client = gspread.service_account_from_dict(info)
+        except (json.JSONDecodeError, ValueError):
             client = gspread.service_account(filename=raw)
         spreadsheet = client.open_by_key(self._settings.google_sheet_id)
         return spreadsheet.worksheet(self._settings.google_worksheet_name)

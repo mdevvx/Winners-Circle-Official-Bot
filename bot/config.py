@@ -15,7 +15,7 @@ STATE_FILE = BASE_DIR / "data" / "bot-state.json"
 class Settings:
     discord_token: str
     command_prefix: str
-    google_service_account_file_wc: Path
+    google_service_account_file_wc: str  # file path OR raw JSON string
     google_sheet_id: str
     google_worksheet_name: str
     verified_role_id: int | None
@@ -72,18 +72,10 @@ def _course_roles(raw_value: str | None) -> dict[str, int]:
 def load_settings() -> Settings:
     load_dotenv(ENV_FILE)
 
-    service_account_file = Path(
-        os.getenv(
-            "GOOGLE_SERVICE_ACCOUNT_FILE_WC", "credentials/google-service-account.json"
-        )
-    )
-    if not service_account_file.is_absolute():
-        service_account_file = BASE_DIR / service_account_file
-
     return Settings(
         discord_token=_required("DISCORD_TOKEN"),
         command_prefix=os.getenv("COMMAND_PREFIX", "mts!"),
-        google_service_account_file_wc=service_account_file,
+        google_service_account_file_wc=os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE_WC", "credentials/google-service-account.json"),
         google_sheet_id=_required("GOOGLE_SHEET_ID"),
         google_worksheet_name=os.getenv("GOOGLE_WORKSHEET_NAME", "Discord Form"),
         verified_role_id=_optional_int("VERIFIED_ROLE_ID"),
