@@ -74,7 +74,7 @@ def load_settings() -> Settings:
 
     service_account_file = Path(
         os.getenv(
-            "GOOGLE_SERVICE_ACCOUNT_FILE", "credentials/google-service-account.json"
+            "GOOGLE_SERVICE_ACCOUNT_FILE_WC", "credentials/google-service-account.json"
         )
     )
     if not service_account_file.is_absolute():

@@ -19,7 +19,7 @@ pip install -r requirements.txt
 - Server Members Intent
 - Message Content Intent
 
-4. Put your Google service account JSON at `credentials/google-service-account.json`, or update `GOOGLE_SERVICE_ACCOUNT_FILE`.
+4. Put your Google service account JSON at `credentials/google-service-account.json`, or update `GOOGLE_SERVICE_ACCOUNT_FILE_WC`.
 
 5. Share the Google Sheet with the service account email.
 
