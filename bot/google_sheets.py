@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 
@@ -73,9 +74,11 @@ class GoogleSheetMemberStore:
         )
 
     def _worksheet(self) -> gspread.Worksheet:
-        client = gspread.service_account(
-            filename=str(self._settings.google_service_account_file_wc)
-        )
+        raw = str(self._settings.google_service_account_file_wc)
+        if raw.strip().startswith("{"):
+            client = gspread.service_account_from_dict(json.loads(raw))
+        else:
+            client = gspread.service_account(filename=raw)
         spreadsheet = client.open_by_key(self._settings.google_sheet_id)
         return spreadsheet.worksheet(self._settings.google_worksheet_name)
 
