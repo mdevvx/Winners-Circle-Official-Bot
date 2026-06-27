@@ -15,7 +15,7 @@ STATE_FILE = BASE_DIR / "data" / "bot-state.json"
 class Settings:
     discord_token: str
     command_prefix: str
-    google_service_account_file: Path
+    google_service_account_file_wc: Path
     google_sheet_id: str
     google_worksheet_name: str
     verified_role_id: int | None
@@ -83,7 +83,7 @@ def load_settings() -> Settings:
     return Settings(
         discord_token=_required("DISCORD_TOKEN"),
         command_prefix=os.getenv("COMMAND_PREFIX", "mts!"),
-        google_service_account_file=service_account_file,
+        google_service_account_file_wc=service_account_file,
         google_sheet_id=_required("GOOGLE_SHEET_ID"),
         google_worksheet_name=os.getenv("GOOGLE_WORKSHEET_NAME", "Discord Form"),
         verified_role_id=_optional_int("VERIFIED_ROLE_ID"),

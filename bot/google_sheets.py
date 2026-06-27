@@ -8,7 +8,6 @@ import gspread
 
 from bot.config import Settings
 
-
 logger = logging.getLogger(__name__)
 
 DISCORD_ID_HEADERS = {
@@ -64,13 +63,19 @@ class GoogleSheetMemberStore:
         return await asyncio.to_thread(self._get_member_status_sync, str(discord_id))
 
     async def set_member_status(self, discord_id: int, status: str) -> bool:
-        return await asyncio.to_thread(self._set_member_status_sync, str(discord_id), status)
+        return await asyncio.to_thread(
+            self._set_member_status_sync, str(discord_id), status
+        )
 
     async def lookup_by_email(self, email: str) -> MemberRecord | None:
-        return await asyncio.to_thread(self._lookup_by_email_sync, email.strip().lower())
+        return await asyncio.to_thread(
+            self._lookup_by_email_sync, email.strip().lower()
+        )
 
     def _worksheet(self) -> gspread.Worksheet:
-        client = gspread.service_account(filename=str(self._settings.google_service_account_file))
+        client = gspread.service_account(
+            filename=str(self._settings.google_service_account_file_wc)
+        )
         spreadsheet = client.open_by_key(self._settings.google_sheet_id)
         return spreadsheet.worksheet(self._settings.google_worksheet_name)
 
@@ -92,13 +97,23 @@ class GoogleSheetMemberStore:
                 continue
             if value.strip().lower() == email:
                 row_values = worksheet.row_values(row_number)
-                status = row_values[status_col - 1] if status_col and len(row_values) >= status_col else ""
-                course = row_values[course_col - 1] if course_col and len(row_values) >= course_col else ""
+                status = (
+                    row_values[status_col - 1]
+                    if status_col and len(row_values) >= status_col
+                    else ""
+                )
+                course = (
+                    row_values[course_col - 1]
+                    if course_col and len(row_values) >= course_col
+                    else ""
+                )
                 return MemberRecord(email=email, status=status, course=course)
 
         return None
 
-    def _find_column_by_headers(self, headers: list[str], valid_headers: set[str]) -> int | None:
+    def _find_column_by_headers(
+        self, headers: list[str], valid_headers: set[str]
+    ) -> int | None:
         for index, header in enumerate(headers, start=1):
             if header.strip().lower() in valid_headers:
                 return index
