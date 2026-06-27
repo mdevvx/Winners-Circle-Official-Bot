@@ -42,6 +42,13 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             ephemeral=True,
         )
 
+        guild_state = await self.bot.state_store.get_guild_state(interaction.guild.id)
+        if not guild_state.bot_enabled:
+            await interaction.edit_original_response(
+                content="❌ The verification system is currently disabled. Please contact an admin."
+            )
+            return
+
         try:
             record = await self.bot.member_store.lookup_by_email(email)
         except Exception:
@@ -182,14 +189,6 @@ class VerifyView(discord.ui.View):
         custom_id="winners_circle:verify",
     )
     async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        assert interaction.guild is not None
-        guild_state = await self.bot.state_store.get_guild_state(interaction.guild.id)
-        if not guild_state.bot_enabled:
-            await interaction.response.send_message(
-                "The verification system is currently disabled. Please contact an admin.",
-                ephemeral=True,
-            )
-            return
         await interaction.response.send_modal(EmailModal(self.bot))
 
 
