@@ -1,0 +1,4 @@
+discord.py>=2.4.0,<3.0.0
+python-dotenv>=1.0.1,<2.0.0
+gspread>=6.1.2,<7.0.0
+google-auth>=2.34.0,<3.0.0

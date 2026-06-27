@@ -1,0 +1,15 @@
+[project]
+name = "more-than-scaling-bot"
+version = "0.1.0"
+description = "Discord.py bot with Google Sheets member tracking."
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4.0,<3.0.0",
+    "python-dotenv>=1.0.1,<2.0.0",
+    "gspread>=6.1.2,<7.0.0",
+    "google-auth>=2.34.0,<3.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
