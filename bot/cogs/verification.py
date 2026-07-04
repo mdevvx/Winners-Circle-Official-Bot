@@ -88,6 +88,27 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             )
             return
 
+        try:
+            linked_discord_id = await self.bot.ghl_client.get_linked_discord_id(contact)
+        except Exception:
+            logger.exception("Failed to check linked Discord ID for GHL contact %s", contact.get("id"))
+            linked_discord_id = None
+
+        if linked_discord_id is not None and linked_discord_id != member.id:
+            await interaction.edit_original_response(
+                content=(
+                    "❌ **This email is already linked to another Discord account.**\n\n"
+                    "If you believe this is a mistake, please contact an admin."
+                )
+            )
+            await self._send_backlog(
+                interaction,
+                email,
+                f"Email already linked to Discord ID {linked_discord_id}",
+                success=False,
+            )
+            return
+
         roles_to_add: list[discord.Role] = []
         role_mentions: list[str] = []
         for tag_name, role_id in matched_roles:
@@ -114,6 +135,12 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
         await self.bot.verified_member_store.set_verified(
             interaction.guild.id, member.id, email
         )
+
+        if linked_discord_id != member.id:
+            try:
+                await self.bot.ghl_client.set_contact_discord_id(contact["id"], member.id)
+            except Exception:
+                logger.exception("Failed to link Discord ID to GHL contact %s", contact.get("id"))
 
         if not roles_to_add:
             await interaction.edit_original_response(
