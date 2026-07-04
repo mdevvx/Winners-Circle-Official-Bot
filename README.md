@@ -1,6 +1,6 @@
 # More Than Scaling Discord Bot
 
-A Discord.py bot with slash commands and Google Sheets member status tracking.
+A Discord.py bot that verifies membership by email against GoHighLevel (GHL) contact tags and assigns roles accordingly.
 
 ## Setup
 
@@ -19,13 +19,11 @@ pip install -r requirements.txt
 - Server Members Intent
 - Message Content Intent
 
-4. Put your Google service account JSON at `credentials/google-service-account.json`, or update `GOOGLE_SERVICE_ACCOUNT_FILE_WC`.
+4. In GHL, create a Private Integration Token (Settings → Private Integrations) with at least the `contacts.readonly` scope, and note the location/sub-account ID it belongs to.
 
-5. Share the Google Sheet with the service account email.
+5. Set `GHL_API_KEY`, `GHL_LOCATION_ID`, and `GHL_TAG_ROLES` (tag-to-role mapping) in `.env`.
 
-6. Optional: set `VERIFIED_ROLE_ID` to the Discord role ID the bot should give to members found in the sheet.
-
-7. Run the bot.
+6. Run the bot.
 
 ```powershell
 python run.py
@@ -34,22 +32,22 @@ python run.py
 ## Commands
 
 - `/status` - Shows bot and server configuration status.
-- `/set_log_channel channel:<channel>` - Admin-only command that sets the activity log channel.
-- `/test_member member:<member>` - Admin-only flow test for a member's Google Sheet row.
-- `mts!sync` - Globally syncs slash commands.
+- `/set_backlog_channel channel:<channel>` - Admin-only: sets the channel where verification attempts are logged.
+- `/ghl_lookup email:<email>` - Admin-only: fetches and displays a contact's raw GHL record by email (testing).
+- `/sync` - Admin-only: globally syncs slash commands.
 
-When a member joins or leaves, the bot updates their `Discord Status` in the configured Google Sheet. If `VERIFIED_ROLE_ID` is set, joining members found in the sheet also receive that role.
+## Verification Flow
 
-Activity logs are sent to the channel configured with `/set_log_channel`. The selected channel is saved locally in `data/bot-state.json`.
+Members click the Verify button posted via `/setup_verification` and submit their email. The bot looks up that email in GHL:
 
-## Google Sheet Columns
+- If the email isn't found, the member is told they're not a member and given a subscribe link.
+- If the contact has none of the tags configured in `GHL_TAG_ROLES`, the member is told there's no active subscription.
+- If a tag matches, the mapped role (plus `VERIFIED_ROLE_ID`, if set) is assigned, and the verified email is stored locally (`data/verified-members.json`) against their Discord ID.
 
-The bot expects a Discord ID column. Accepted names are:
+Every 6 hours, a background task rechecks every member holding a tag-mapped role against their current GHL tags, and removes the role if the tag is no longer present.
 
-- `Discord ID`
-- `DiscordID`
-- `discord_id`
-- `discord id`
-- `Please provide your Discord ID (optional)`
+## Adding a New Subscription Tag
 
-If `Discord Status` does not exist, the bot creates it automatically.
+Add another `TagName:RoleID` entry to `GHL_TAG_ROLES` in `.env` — no code changes needed.
+
+Activity logs (member join/leave, verification results, role removals) are sent to the channel configured with `/set_backlog_channel`. Channel selection is saved locally in `data/bot-state.json`.

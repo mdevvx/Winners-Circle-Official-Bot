@@ -8,8 +8,9 @@ from discord.ext import commands
 
 from bot.bot import MoreThanScalingBot
 
-
 logger = logging.getLogger(__name__)
+
+SUBSCRIBE_URL = "https://pajamabillionaire.com/"
 
 
 class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
@@ -42,102 +43,110 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             ephemeral=True,
         )
 
-        guild_state = await self.bot.state_store.get_guild_state(interaction.guild.id)
-        if not guild_state.bot_enabled:
-            await interaction.edit_original_response(
-                content="❌ The verification system is currently disabled. Please contact an admin."
-            )
-            return
-
         try:
-            record = await self.bot.member_store.lookup_by_email(email)
+            contact = await self.bot.ghl_client.get_contact_by_email(email)
         except Exception:
-            logger.exception("Failed to lookup email %s in Google Sheet", email)
+            logger.exception("Failed to lookup email %s in GHL", email)
             await interaction.edit_original_response(
                 content="⚠️ Could not reach the membership database. Please try again in a moment or contact an admin."
             )
             return
 
-        if record is None:
+        if contact is None:
             await interaction.edit_original_response(
                 content=(
-                    "❌ **Email not found.**\n\n"
+                    "❌ **You are not a member.**\n\n"
                     "We couldn't find your email in our system. "
-                    "Please make sure you're using the email you registered with."
+                    f"Go ahead and subscribe here: {SUBSCRIBE_URL}"
                 )
             )
-            await self._send_backlog(interaction, email, "Not found in sheet", success=False)
+            await self._send_backlog(
+                interaction, email, "Not found in GHL", success=False
+            )
             return
 
-        if not record.is_active:
+        tags = {tag.strip().lower() for tag in (contact.get("tags") or [])}
+        matched_roles: list[tuple[str, int]] = [
+            (tag_name, role_id)
+            for tag_name, role_id in self.bot.settings.ghl_tag_roles.items()
+            if tag_name.strip().lower() in tags
+        ]
+
+        if not matched_roles:
             await interaction.edit_original_response(
                 content=(
-                    "❌ **Membership not active.**\n\n"
-                    "Your payment has not been confirmed yet. "
-                    "Please complete your payment to gain access.\n\n"
-                    "If you believe this is a mistake, please contact support."
+                    "❌ **No active subscription found.**\n\n"
+                    "Your account doesn't have an active subscription tag. "
+                    f"Go ahead and subscribe here: {SUBSCRIBE_URL}"
                 )
             )
-            await self._send_backlog(interaction, email, f"Unpaid — status: {record.status}", success=False)
+            await self._send_backlog(
+                interaction,
+                email,
+                f"No matching tag — tags: {', '.join(tags) or 'none'}",
+                success=False,
+            )
             return
 
-        course = record.course.strip()
-        role_id: int | None = None
-        for course_name, rid in self.bot.settings.course_roles.items():
-            if course_name.lower() == course.lower():
-                role_id = rid
-                break
-
-        if role_id is None:
-            await interaction.edit_original_response(
-                content=(
-                    f"⚠️ Your course (**{course or 'unknown'}**) is not configured in this server. "
-                    "Please contact an admin."
+        roles_to_add: list[discord.Role] = []
+        role_mentions: list[str] = []
+        for tag_name, role_id in matched_roles:
+            role = interaction.guild.get_role(role_id)
+            if role is None:
+                logger.warning(
+                    "Role %s for tag '%s' is missing in guild %s",
+                    role_id,
+                    tag_name,
+                    interaction.guild.id,
                 )
-            )
-            await self._send_backlog(interaction, email, f"No role mapped for course: {course}", success=False)
-            return
+                continue
+            role_mentions.append(role.mention)
+            if role not in member.roles:
+                roles_to_add.append(role)
 
-        role = interaction.guild.get_role(role_id)
-        if role is None:
-            await interaction.edit_original_response(
-                content="⚠️ The role for your course could not be found. Please contact an admin."
-            )
-            await self._send_backlog(interaction, email, f"Role ID {role_id} missing in server", success=False)
-            return
-
-        if role in member.roles:
-            await interaction.edit_original_response(
-                content=f"✅ You already have the {role.mention} role!"
-            )
-            return
-
-        roles_to_add = [role]
-        verified_role = None
         if self.bot.settings.verified_role_id:
-            verified_role = interaction.guild.get_role(self.bot.settings.verified_role_id)
+            verified_role = interaction.guild.get_role(
+                self.bot.settings.verified_role_id
+            )
             if verified_role and verified_role not in member.roles:
                 roles_to_add.append(verified_role)
 
-        try:
-            await member.add_roles(*roles_to_add, reason=f"Email verified: {email}")
+        await self.bot.verified_member_store.set_verified(
+            interaction.guild.id, member.id, email
+        )
+
+        if not roles_to_add:
             await interaction.edit_original_response(
-                content=f"✅ **Verification successful!**\n\nYou've been given the {role.mention} role. Welcome!"
+                content=f"✅ You already have the {', '.join(role_mentions) or 'matching'} role(s)!"
             )
-            await self._send_backlog(interaction, email, f"Success — assigned {role.name} ({course})", success=True)
+            return
+
+        try:
+            await member.add_roles(*roles_to_add, reason=f"GHL email verified: {email}")
+            await interaction.edit_original_response(
+                content=f"✅ **Verification successful!**\n\nYou've been given the {', '.join(role_mentions)} role(s). Welcome!"
+            )
+            await self._send_backlog(
+                interaction,
+                email,
+                f"Success — assigned {', '.join(role_mentions)}",
+                success=True,
+            )
             await self.bot.send_activity_log(
                 interaction.guild,
                 "Member Verified",
-                f"{member.mention} verified with email `{email}` and was assigned {role.mention} (course: **{course}**).",
+                f"{member.mention} verified with email `{email}` and was assigned {', '.join(role_mentions)}.",
                 discord.Color.green(),
             )
         except discord.Forbidden:
             await interaction.edit_original_response(
                 content="⚠️ I don't have permission to assign roles. Please contact an admin."
             )
-            await self._send_backlog(interaction, email, "No permission to assign role", success=False)
+            await self._send_backlog(
+                interaction, email, "No permission to assign role", success=False
+            )
         except discord.HTTPException:
-            logger.exception("Failed to assign role %s to %s", role_id, member.id)
+            logger.exception("Failed to assign roles to %s", member.id)
             await interaction.edit_original_response(
                 content="⚠️ An error occurred while assigning your role. Please try again or contact an admin."
             )
@@ -174,7 +183,9 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
         try:
             await channel.send(embed=embed)
         except discord.HTTPException:
-            logger.exception("Failed to send to backlog channel %s", guild_state.backlog_channel_id)
+            logger.exception(
+                "Failed to send to backlog channel %s", guild_state.backlog_channel_id
+            )
 
 
 class VerifyView(discord.ui.View):
@@ -183,12 +194,14 @@ class VerifyView(discord.ui.View):
         self.bot = bot
 
     @discord.ui.button(
-        label="Verify Access",
+        label="Get Full Access",
         style=discord.ButtonStyle.primary,
-        emoji="✅",
+        emoji="🔑",
         custom_id="winners_circle:verify",
     )
-    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def verify_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         await interaction.response.send_modal(EmailModal(self.bot))
 
 
@@ -228,7 +241,9 @@ class VerificationSetupModal(discord.ui.Modal, title="Verification Panel Setup")
         self.bot = bot
         self.channel = channel
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception
+    ) -> None:
         logger.exception("Verification setup modal failed", exc_info=error)
         msg = "Something went wrong while setting up the panel. Please try again."
         if interaction.response.is_done():
@@ -313,10 +328,15 @@ class VerificationCog(commands.Cog):
             logger.exception("Verification command failed", exc_info=error)
             message = "Something went wrong while running this command."
 
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            logger.warning(
+                "Could not deliver error response for interaction %s", interaction.id
+            )
 
 
 async def setup(bot: MoreThanScalingBot) -> None:

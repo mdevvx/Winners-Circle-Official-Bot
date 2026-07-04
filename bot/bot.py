@@ -7,17 +7,33 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import Settings
-from bot.google_sheets import GoogleSheetMemberStore
+from bot.ghl_client import GHLClient
 from bot.state import BotStateStore
+from bot.verified_members import VerifiedMemberStore
 
 
 logger = logging.getLogger(__name__)
 
 
+MAX_SEEN_INTERACTIONS = 1000
+
+
 class MoreThanScalingCommandTree(app_commands.CommandTree):
-    """Keeps slash commands scoped to Discord servers."""
+    """Keeps slash commands scoped to Discord servers and ignores duplicate interaction delivery."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._seen_interaction_ids: set[int] = set()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.id in self._seen_interaction_ids:
+            logger.warning("Ignoring duplicate delivery of interaction %s", interaction.id)
+            return False
+
+        self._seen_interaction_ids.add(interaction.id)
+        if len(self._seen_interaction_ids) > MAX_SEEN_INTERACTIONS:
+            self._seen_interaction_ids.clear()
+
         if not interaction.guild:
             await interaction.response.send_message(
                 "This command can only be used inside a server.",
@@ -32,7 +48,6 @@ class MoreThanScalingBot(commands.Bot):
     def __init__(
         self,
         settings: Settings,
-        member_store: GoogleSheetMemberStore,
         state_store: BotStateStore,
     ) -> None:
         intents = discord.Intents.default()
@@ -47,8 +62,9 @@ class MoreThanScalingBot(commands.Bot):
             tree_cls=MoreThanScalingCommandTree,
         )
         self.settings = settings
-        self.member_store = member_store
         self.state_store = state_store
+        self.ghl_client = GHLClient(settings)
+        self.verified_member_store = VerifiedMemberStore(settings.verified_members_file)
 
     async def send_activity_log(
         self,
@@ -90,7 +106,11 @@ class MoreThanScalingBot(commands.Bot):
         await self.load_extension("bot.cogs.admin")
         await self.load_extension("bot.cogs.members")
         await self.load_extension("bot.cogs.verification")
+        await self.load_extension("bot.cogs.ghl_recheck")
         logger.info("Loaded bot extensions")
+
+        synced = await self.tree.sync()
+        logger.info("Auto-synced %s slash commands on startup", len(synced))
 
     async def on_ready(self) -> None:
         if self.user:

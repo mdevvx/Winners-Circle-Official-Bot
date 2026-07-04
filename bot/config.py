@@ -9,19 +9,19 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
 STATE_FILE = BASE_DIR / "data" / "bot-state.json"
+VERIFIED_MEMBERS_FILE = BASE_DIR / "data" / "verified-members.json"
 
 
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
     command_prefix: str
-    google_service_account_file_wc: str  # file path OR raw JSON string
-    google_sheet_id: str
-    google_worksheet_name: str
     verified_role_id: int | None
     state_file: Path
-    owner_ids: set[int]
-    course_roles: dict[str, int]
+    verified_members_file: Path
+    ghl_api_key: str
+    ghl_location_id: str
+    ghl_tag_roles: dict[str, int]
 
 
 def _required(name: str) -> str:
@@ -34,18 +34,6 @@ def _required(name: str) -> str:
     return value
 
 
-def _owner_ids(raw_value: str | None) -> set[int]:
-    if not raw_value:
-        return set()
-
-    owner_ids: set[int] = set()
-    for item in raw_value.split(","):
-        item = item.strip()
-        if item:
-            owner_ids.add(int(item))
-    return owner_ids
-
-
 def _optional_int(name: str) -> int | None:
     value = os.getenv(name)
     if not value:
@@ -53,7 +41,8 @@ def _optional_int(name: str) -> int | None:
     return int(value)
 
 
-def _course_roles(raw_value: str | None) -> dict[str, int]:
+def _parse_role_map(raw_value: str | None) -> dict[str, int]:
+    """Parses 'Name:RoleID,Name2:RoleID2' into a dict. Used for the GHL tag-role mapping."""
     if not raw_value:
         return {}
     result: dict[str, int] = {}
@@ -75,11 +64,10 @@ def load_settings() -> Settings:
     return Settings(
         discord_token=_required("DISCORD_TOKEN"),
         command_prefix=os.getenv("COMMAND_PREFIX", "mts!"),
-        google_service_account_file_wc=os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE_WC", "credentials/google-service-account.json"),
-        google_sheet_id=_required("GOOGLE_SHEET_ID"),
-        google_worksheet_name=os.getenv("GOOGLE_WORKSHEET_NAME", "Discord Form"),
         verified_role_id=_optional_int("VERIFIED_ROLE_ID"),
         state_file=STATE_FILE,
-        owner_ids=_owner_ids(os.getenv("OWNER_IDS")),
-        course_roles=_course_roles(os.getenv("COURSE_ROLES")),
+        verified_members_file=VERIFIED_MEMBERS_FILE,
+        ghl_api_key=os.getenv("GHL_API_KEY", ""),
+        ghl_location_id=os.getenv("GHL_LOCATION_ID", ""),
+        ghl_tag_roles=_parse_role_map(os.getenv("GHL_TAG_ROLES")),
     )
