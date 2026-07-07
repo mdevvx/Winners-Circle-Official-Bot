@@ -13,6 +13,25 @@ logger = logging.getLogger(__name__)
 SUBSCRIBE_URL = "https://pajamabillionaire.com/"
 
 
+def _outcome_embed(title: str, description: str) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description, color=discord.Color.gold())
+    embed.set_footer(text="Winners Circle & Team")
+    return embed
+
+
+class SubscribeView(discord.ui.View):
+    def __init__(self, label: str = "Join Winners Circle") -> None:
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.link,
+                url=SUBSCRIBE_URL,
+                emoji="🏆",
+            )
+        )
+
+
 class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
     email_input = discord.ui.TextInput(
         label="Email Address",
@@ -38,27 +57,33 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
         member = interaction.user
         email = self.email_input.value.strip().lower()
 
-        await interaction.response.send_message(
-            "🔍 Checking your membership, please wait...",
-            ephemeral=True,
-        )
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
             contact = await self.bot.ghl_client.get_contact_by_email(email)
         except Exception:
             logger.exception("Failed to lookup email %s in GHL", email)
             await interaction.edit_original_response(
-                content="⚠️ Could not reach the membership database. Please try again in a moment or contact an admin."
+                embed=_outcome_embed(
+                    "⚠️ Something Went Wrong",
+                    "We couldn't reach the membership database right now. Please try again in a moment or contact an admin.",
+                )
             )
             return
 
         if contact is None:
             await interaction.edit_original_response(
-                content=(
-                    "❌ **You are not a member.**\n\n"
-                    "We couldn't find your email in our system. "
-                    f"Go ahead and subscribe here: {SUBSCRIBE_URL}"
-                )
+                embed=_outcome_embed(
+                    "🔒 We Couldn't Find Your Membership",
+                    f"No account is linked to `{email}` in our system.\n\n"
+                    "**Winners Circle members get:**\n"
+                    "• Live access to the Trading Room\n"
+                    "• The full Business in a Box toolkit\n"
+                    "• Inner Circle strategy & community\n\n"
+                    "Already a member? Double-check you entered the exact email you signed up with and try again. "
+                    "Otherwise, tap below to join and unlock full access in minutes.",
+                ),
+                view=SubscribeView(label="Join Winners Circle"),
             )
             await self._send_backlog(
                 interaction, email, "Not found in GHL", success=False
@@ -74,11 +99,14 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
 
         if not matched_roles:
             await interaction.edit_original_response(
-                content=(
-                    "❌ **No active subscription found.**\n\n"
-                    "Your account doesn't have an active subscription tag. "
-                    f"Go ahead and subscribe here: {SUBSCRIBE_URL}"
-                )
+                embed=_outcome_embed(
+                    "⏳ Your Membership Has Lapsed",
+                    f"We found your account (`{email}`), but your subscription isn't active right now — "
+                    "it may have expired or been cancelled.\n\n"
+                    "Renew today so you don't miss the next call in the Trading Room, Business in a Box, or Inner Circle. "
+                    "Tap below to pick back up right where you left off.",
+                ),
+                view=SubscribeView(label="Renew Membership"),
             )
             await self._send_backlog(
                 interaction,
@@ -91,14 +119,18 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
         try:
             linked_discord_id = await self.bot.ghl_client.get_linked_discord_id(contact)
         except Exception:
-            logger.exception("Failed to check linked Discord ID for GHL contact %s", contact.get("id"))
+            logger.exception(
+                "Failed to check linked Discord ID for GHL contact %s",
+                contact.get("id"),
+            )
             linked_discord_id = None
 
         if linked_discord_id is not None and linked_discord_id != member.id:
             await interaction.edit_original_response(
-                content=(
-                    "❌ **This email is already linked to another Discord account.**\n\n"
-                    "If you believe this is a mistake, please contact an admin."
+                embed=_outcome_embed(
+                    "❌ Email Already Linked",
+                    f"The email `{email}` is already linked to another Discord account.\n\n"
+                    "If you believe this is a mistake, please contact an admin.",
                 )
             )
             await self._send_backlog(
@@ -138,20 +170,30 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
 
         if linked_discord_id != member.id:
             try:
-                await self.bot.ghl_client.set_contact_discord_id(contact["id"], member.id)
+                await self.bot.ghl_client.set_contact_discord_id(
+                    contact["id"], member.id
+                )
             except Exception:
-                logger.exception("Failed to link Discord ID to GHL contact %s", contact.get("id"))
+                logger.exception(
+                    "Failed to link Discord ID to GHL contact %s", contact.get("id")
+                )
 
         if not roles_to_add:
             await interaction.edit_original_response(
-                content=f"✅ You already have the {', '.join(role_mentions) or 'matching'} role(s)!"
+                embed=_outcome_embed(
+                    "✅ Already Verified",
+                    f"You already have the {', '.join(role_mentions) or 'matching'} role(s). You're all set!",
+                )
             )
             return
 
         try:
             await member.add_roles(*roles_to_add, reason=f"GHL email verified: {email}")
             await interaction.edit_original_response(
-                content=f"✅ **Verification successful!**\n\nYou've been given the {', '.join(role_mentions)} role(s). Welcome!"
+                embed=_outcome_embed(
+                    "✅ Verification Successful",
+                    f"Welcome! You've been given the {', '.join(role_mentions)} role(s).",
+                )
             )
             await self._send_backlog(
                 interaction,
@@ -167,7 +209,10 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             )
         except discord.Forbidden:
             await interaction.edit_original_response(
-                content="⚠️ I don't have permission to assign roles. Please contact an admin."
+                embed=_outcome_embed(
+                    "⚠️ Missing Permissions",
+                    "I don't have permission to assign your role(s). Please contact an admin.",
+                )
             )
             await self._send_backlog(
                 interaction, email, "No permission to assign role", success=False
@@ -175,7 +220,10 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
         except discord.HTTPException:
             logger.exception("Failed to assign roles to %s", member.id)
             await interaction.edit_original_response(
-                content="⚠️ An error occurred while assigning your role. Please try again or contact an admin."
+                embed=_outcome_embed(
+                    "⚠️ Role Assignment Failed",
+                    "An error occurred while assigning your role. Please try again or contact an admin.",
+                )
             )
 
     async def _send_backlog(
@@ -215,21 +263,47 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             )
 
 
-class VerifyView(discord.ui.View):
+class VerifyButton(discord.ui.Button):
     def __init__(self, bot: MoreThanScalingBot) -> None:
-        super().__init__(timeout=None)
+        super().__init__(
+            label="Get Full Access",
+            style=discord.ButtonStyle.primary,
+            emoji="🔑",
+            custom_id="winners_circle:verify",
+        )
         self.bot = bot
 
-    @discord.ui.button(
-        label="Get Full Access",
-        style=discord.ButtonStyle.primary,
-        emoji="🔑",
-        custom_id="winners_circle:verify",
-    )
-    async def verify_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(EmailModal(self.bot))
+
+
+class VerifyLayout(discord.ui.LayoutView):
+    """Components V2 container-based verification panel."""
+
+    def __init__(
+        self,
+        bot: MoreThanScalingBot,
+        title: str = "🏆 Winners Circle — Membership Verification!",
+        description: str = "Welcome! Click the button below to verify your membership.",
+        color: discord.Color = discord.Color.gold(),
+        image_url: str | None = None,
+        footer_text: str | None = None,
+    ) -> None:
+        super().__init__(timeout=None)
+
+        container_children: list[discord.ui.Item] = [
+            discord.ui.TextDisplay(f"## {title}\n\n{description}")
+        ]
+        if image_url:
+            container_children.append(
+                discord.ui.MediaGallery(discord.MediaGalleryItem(media=image_url))
+            )
+        if footer_text:
+            container_children.append(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container_children.append(discord.ui.TextDisplay(f"-# {footer_text}"))
+
+        self.add_item(discord.ui.Container(*container_children, accent_colour=color))
+        self.add_item(discord.ui.ActionRow(VerifyButton(bot)))
 
 
 class VerificationSetupModal(discord.ui.Modal, title="Verification Panel Setup"):
@@ -293,21 +367,17 @@ class VerificationSetupModal(discord.ui.Modal, title="Verification Panel Setup")
                 )
                 return
 
-        embed = discord.Embed(
+        layout = VerifyLayout(
+            self.bot,
             title=self.embed_title.value.strip(),
             description=self.embed_description.value.strip(),
             color=color,
+            image_url=self.embed_image.value.strip() or None,
+            footer_text=self.embed_footer.value.strip() or interaction.guild.name,
         )
 
-        image_url = self.embed_image.value.strip()
-        if image_url:
-            embed.set_image(url=image_url)
-
-        footer_text = self.embed_footer.value.strip() or interaction.guild.name
-        embed.set_footer(text=footer_text)
-
         try:
-            await self.channel.send(embed=embed, view=VerifyView(self.bot))
+            await self.channel.send(view=layout)
         except discord.Forbidden:
             await interaction.response.send_message(
                 f"I don't have permission to send messages in {self.channel.mention}.",
@@ -368,4 +438,4 @@ class VerificationCog(commands.Cog):
 
 async def setup(bot: MoreThanScalingBot) -> None:
     await bot.add_cog(VerificationCog(bot))
-    bot.add_view(VerifyView(bot))
+    bot.add_view(VerifyLayout(bot))
