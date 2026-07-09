@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -w '\\\\nHTTP_STATUS:%{http_code}\\\\n' -G https://services.leadconnectorhq.com/contacts/ --data-urlencode locationId=9OVnsFCdZNk7vqiEJbNF --data-urlencode query=rojuanblack6@gmail.com -H 'Authorization: Bearer pit-a67bd6c2-3dfb-46a8-b577-58ee625c0016' -H 'Version: 2021-07-28' -H 'Accept: application/json' --max-time 20)"
+    ]
+  }
+}

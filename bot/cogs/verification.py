@@ -100,13 +100,12 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
         if not matched_roles:
             await interaction.edit_original_response(
                 embed=_outcome_embed(
-                    "⏳ Your Membership Has Lapsed",
-                    f"We found your account (`{email}`), but your subscription isn't active right now — "
-                    "it may have expired or been cancelled.\n\n"
-                    "Renew today so you don't miss the next call in the Trading Room, Business in a Box, or Inner Circle. "
-                    "Tap below to pick back up right where you left off.",
+                    "🔒 No Active Membership Found",
+                    f"We found an account for `{email}`, but it doesn't have an active membership right now.\n\n"
+                    "Grab a plan to unlock the Trading Room, Business in a Box, or Inner Circle. "
+                    "Tap below to get started.",
                 ),
-                view=SubscribeView(label="Renew Membership"),
+                view=SubscribeView(label="Join Winners Circle"),
             )
             await self._send_backlog(
                 interaction,
