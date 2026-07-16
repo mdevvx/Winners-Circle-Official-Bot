@@ -36,6 +36,11 @@ class AdminCog(commands.Cog):
             channel = interaction.guild.get_channel(guild_state.backlog_channel_id)
             backlog_channel_text = channel.mention if channel else f"Missing ({guild_state.backlog_channel_id})"
 
+        leads_channel_text = "Not set"
+        if guild_state.leads_channel_id:
+            channel = interaction.guild.get_channel(guild_state.leads_channel_id)
+            leads_channel_text = channel.mention if channel else f"Missing ({guild_state.leads_channel_id})"
+
         if self.bot.settings.ghl_tag_roles:
             tag_lines = []
             for tag_name, rid in self.bot.settings.ghl_tag_roles.items():
@@ -54,6 +59,7 @@ class AdminCog(commands.Cog):
         embed.add_field(name="Server", value=interaction.guild.name, inline=True)
         embed.add_field(name="Additional Verified Role", value=role_text, inline=False)
         embed.add_field(name="Backlog Channel", value=backlog_channel_text, inline=True)
+        embed.add_field(name="Leads Channel", value=leads_channel_text, inline=True)
         embed.add_field(name="GHL Tag → Role Mapping", value=tag_roles_text, inline=False)
         embed.add_field(name="Discord Latency", value=f"{latency_ms}ms", inline=True)
 
@@ -78,6 +84,28 @@ class AdminCog(commands.Cog):
             interaction.guild,
             "Backlog Channel Updated",
             f"{interaction.user.mention} set the verification backlog channel to {channel.mention}.",
+            discord.Color.green(),
+        )
+
+    @app_commands.command(name="set_leads_channel", description="Set the channel where verification form submissions (name/email/phone) are posted.")
+    @app_commands.describe(channel="Channel to receive lead submissions.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_leads_channel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+    ) -> None:
+        assert interaction.guild is not None
+        await self.bot.state_store.set_leads_channel(interaction.guild.id, channel.id)
+
+        await interaction.response.send_message(
+            f"Verification form submissions will be sent to {channel.mention}.",
+            ephemeral=True,
+        )
+        await self.bot.send_activity_log(
+            interaction.guild,
+            "Leads Channel Updated",
+            f"{interaction.user.mention} set the leads channel to {channel.mention}.",
             discord.Color.green(),
         )
 
@@ -121,21 +149,57 @@ class AdminCog(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="sync", description="Admin-only: sync all slash commands globally.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+    @commands.command(name="sync")
+    @commands.has_permissions(administrator=True)
+    async def sync(self, ctx: commands.Context) -> None:
+        """Admin-only: sync slash commands to this server. Usage: $sync"""
+        if ctx.guild is None:
+            await ctx.send("This command can only be used inside a server.")
+            return
 
-        synced = await self.bot.tree.sync()
-        logger.info("Globally synced %s slash commands", len(synced))
-        await interaction.followup.send(f"Synced {len(synced)} commands globally.", ephemeral=True)
-        if interaction.guild:
-            await self.bot.send_activity_log(
-                interaction.guild,
-                "Slash Commands Synced",
-                f"{interaction.user.mention} synced {len(synced)} slash commands.",
-                discord.Color.green(),
-            )
+        await self._safe_react(ctx.message, "⏳")
+
+        try:
+            self.bot.tree.copy_global_to(guild=ctx.guild)
+            synced = await self.bot.tree.sync(guild=ctx.guild)
+        except discord.HTTPException:
+            logger.exception("Failed to sync slash commands to guild %s", ctx.guild.id)
+            await self._safe_unreact(ctx.message, "⏳")
+            await self._safe_react(ctx.message, "❌")
+            await ctx.send("⚠️ Failed to sync commands. Please try again.")
+            return
+
+        logger.info("Synced %s slash commands to guild %s", len(synced), ctx.guild.id)
+        await self._safe_unreact(ctx.message, "⏳")
+        await self._safe_react(ctx.message, "✅")
+        await ctx.send(f"Synced {len(synced)} commands to this server.")
+        await self.bot.send_activity_log(
+            ctx.guild,
+            "Slash Commands Synced",
+            f"{ctx.author.mention} synced {len(synced)} slash commands to this server.",
+            discord.Color.green(),
+        )
+
+    async def _safe_react(self, message: discord.Message, emoji: str) -> None:
+        try:
+            await message.add_reaction(emoji)
+        except discord.HTTPException:
+            logger.warning("Could not add reaction %s to message %s", emoji, message.id)
+
+    async def _safe_unreact(self, message: discord.Message, emoji: str) -> None:
+        try:
+            await message.remove_reaction(emoji, self.bot.user)
+        except discord.HTTPException:
+            logger.warning("Could not remove reaction %s from message %s", emoji, message.id)
+
+    async def cog_command_error(
+        self, ctx: commands.Context, error: commands.CommandError
+    ) -> None:
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("You do not have permission to use this command.")
+        else:
+            logger.exception("Message command failed", exc_info=error)
+            await ctx.send("Something went wrong while running this command.")
 
     async def cog_app_command_error(
         self,

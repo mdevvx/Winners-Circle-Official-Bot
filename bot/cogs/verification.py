@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import discord
 from discord import app_commands
@@ -14,9 +15,21 @@ SUBSCRIBE_URL = "https://pajamabillionaire.com/"
 
 
 def _outcome_embed(title: str, description: str) -> discord.Embed:
-    embed = discord.Embed(title=title, description=description, color=discord.Color.gold())
+    embed = discord.Embed(
+        title=title, description=description, color=discord.Color.gold()
+    )
     embed.set_footer(text="Winners Circle & Team")
     return embed
+
+
+def _normalize_us_phone(raw: str) -> str | None:
+    """Returns a formatted US phone number, or None if raw isn't a valid 10-digit US number."""
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return None
+    return f"({digits[0:3]}) {digits[3:6]}-{digits[6:]}"
 
 
 class SubscribeView(discord.ui.View):
@@ -33,11 +46,35 @@ class SubscribeView(discord.ui.View):
 
 
 class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
+    first_name_input = discord.ui.TextInput(
+        label="First Name",
+        placeholder="Enter your first name",
+        min_length=1,
+        max_length=100,
+    )
+    last_name_input = discord.ui.TextInput(
+        label="Last Name",
+        placeholder="Enter your last name",
+        min_length=1,
+        max_length=100,
+    )
     email_input = discord.ui.TextInput(
         label="Email Address",
         placeholder="Enter the email you registered with",
         min_length=5,
         max_length=254,
+    )
+    phone_input = discord.ui.TextInput(
+        label="Phone Number",
+        placeholder="e.g. 555-123-4567",
+        max_length=20,
+        required=False,
+    )
+    country_input = discord.ui.TextInput(
+        label="Country",
+        placeholder="e.g. United States",
+        min_length=2,
+        max_length=100,
     )
 
     def __init__(self, bot: MoreThanScalingBot) -> None:
@@ -55,7 +92,29 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             return
 
         member = interaction.user
+        first_name = self.first_name_input.value.strip()
+        last_name = self.last_name_input.value.strip()
         email = self.email_input.value.strip().lower()
+        country = self.country_input.value.strip()
+
+        if "@" not in email:
+            await interaction.response.send_message(
+                "❌ Please enter a valid email address (e.g. name@example.com) and try again.",
+                ephemeral=True,
+            )
+            return
+
+        phone_raw = self.phone_input.value.strip()
+        phone = "Not provided"
+        if phone_raw:
+            normalized_phone = _normalize_us_phone(phone_raw)
+            if normalized_phone is None:
+                await interaction.response.send_message(
+                    "❌ Please enter a valid US phone number (e.g. 555-123-4567), or leave it blank, and try again.",
+                    ephemeral=True,
+                )
+                return
+            phone = normalized_phone
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -68,6 +127,15 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
                     "⚠️ Something Went Wrong",
                     "We couldn't reach the membership database right now. Please try again in a moment or contact an admin.",
                 )
+            )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "GHL lookup failed",
             )
             return
 
@@ -87,6 +155,15 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             )
             await self._send_backlog(
                 interaction, email, "Not found in GHL", success=False
+            )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "Not found in GHL",
             )
             return
 
@@ -113,6 +190,15 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
                 f"No matching tag — tags: {', '.join(tags) or 'none'}",
                 success=False,
             )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "No matching subscription tag",
+            )
             return
 
         try:
@@ -137,6 +223,15 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
                 email,
                 f"Email already linked to Discord ID {linked_discord_id}",
                 success=False,
+            )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "Email already linked to another account",
             )
             return
 
@@ -184,6 +279,15 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
                     f"You already have the {', '.join(role_mentions) or 'matching'} role(s). You're all set!",
                 )
             )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "Already verified",
+            )
             return
 
         try:
@@ -199,6 +303,15 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
                 email,
                 f"Success — assigned {', '.join(role_mentions)}",
                 success=True,
+            )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                f"Success — assigned {', '.join(role_mentions)}",
             )
             await self.bot.send_activity_log(
                 interaction.guild,
@@ -216,8 +329,26 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             await self._send_backlog(
                 interaction, email, "No permission to assign role", success=False
             )
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "Missing permission to assign role",
+            )
         except discord.HTTPException:
             logger.exception("Failed to assign roles to %s", member.id)
+            await self._send_lead_capture(
+                interaction,
+                first_name,
+                last_name,
+                email,
+                phone,
+                country,
+                "Role assignment failed",
+            )
             await interaction.edit_original_response(
                 embed=_outcome_embed(
                     "⚠️ Role Assignment Failed",
@@ -261,6 +392,43 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
                 "Failed to send to backlog channel %s", guild_state.backlog_channel_id
             )
 
+    async def _send_lead_capture(
+        self,
+        interaction: discord.Interaction,
+        first_name: str,
+        last_name: str,
+        email: str,
+        phone: str,
+        country: str,
+        result: str,
+    ) -> None:
+        assert interaction.guild is not None
+        guild_state = await self.bot.state_store.get_guild_state(interaction.guild.id)
+        if not guild_state.leads_channel_id:
+            return
+
+        channel = interaction.guild.get_channel(guild_state.leads_channel_id)
+        if not isinstance(channel, discord.abc.Messageable):
+            return
+
+        embed = discord.Embed(title="Get Full Access")
+        embed.add_field(name="First Name", value=first_name, inline=False)
+        embed.add_field(name="Last Name", value=last_name, inline=False)
+        embed.add_field(name="Email Address", value=email, inline=False)
+        embed.add_field(name="Phone", value=phone, inline=False)
+        embed.add_field(name="Country", value=country, inline=False)
+        embed.set_footer(
+            text=f"Submitted by {interaction.user} ({interaction.user.id}) • {result}"
+        )
+        embed.timestamp = discord.utils.utcnow()
+
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            logger.exception(
+                "Failed to send to leads channel %s", guild_state.leads_channel_id
+            )
+
 
 class VerifyButton(discord.ui.Button):
     def __init__(self, bot: MoreThanScalingBot) -> None:
@@ -298,7 +466,9 @@ class VerifyLayout(discord.ui.LayoutView):
                 discord.ui.MediaGallery(discord.MediaGalleryItem(media=image_url))
             )
         if footer_text:
-            container_children.append(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container_children.append(
+                discord.ui.Separator(spacing=discord.SeparatorSpacing.small)
+            )
             container_children.append(discord.ui.TextDisplay(f"-# {footer_text}"))
 
         self.add_item(discord.ui.Container(*container_children, accent_colour=color))

@@ -5,6 +5,13 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
+class _SuppressDaveyWarning(logging.Filter):
+    """Hides discord.py's harmless 'davey is not installed' voice-library notice; we don't use voice."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "davey is not installed" not in record.getMessage()
+
+
 def setup_logging() -> None:
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -29,3 +36,5 @@ def setup_logging() -> None:
     root_logger.handlers.clear()
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
+
+    logging.getLogger("discord.client").addFilter(_SuppressDaveyWarning())

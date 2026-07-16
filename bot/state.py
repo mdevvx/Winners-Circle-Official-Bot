@@ -11,6 +11,7 @@ from typing import Any
 class GuildState:
     guild_id: int
     backlog_channel_id: int | None = None
+    leads_channel_id: int | None = None
 
 
 class BotStateStore:
@@ -32,12 +33,21 @@ class BotStateStore:
             await asyncio.to_thread(self._write, data)
             return self._parse_guild_state(guild_id, data)
 
+    async def set_leads_channel(self, guild_id: int, channel_id: int) -> GuildState:
+        async with self._lock:
+            data = await asyncio.to_thread(self._read)
+            data.setdefault("guilds", {}).setdefault(str(guild_id), {})["leads_channel_id"] = str(channel_id)
+            await asyncio.to_thread(self._write, data)
+            return self._parse_guild_state(guild_id, data)
+
     def _parse_guild_state(self, guild_id: int, data: dict[str, Any]) -> GuildState:
         guild_data = data.get("guilds", {}).get(str(guild_id), {})
         backlog_channel_id = guild_data.get("backlog_channel_id") or guild_data.get("log_channel_id")
+        leads_channel_id = guild_data.get("leads_channel_id")
         return GuildState(
             guild_id=guild_id,
             backlog_channel_id=int(backlog_channel_id) if backlog_channel_id else None,
+            leads_channel_id=int(leads_channel_id) if leads_channel_id else None,
         )
 
     def _read(self) -> dict[str, Any]:

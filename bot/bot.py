@@ -109,8 +109,14 @@ class MoreThanScalingBot(commands.Bot):
         await self.load_extension("bot.cogs.ghl_recheck")
         logger.info("Loaded bot extensions")
 
-        synced = await self.tree.sync()
-        logger.info("Auto-synced %s slash commands on startup", len(synced))
+        # Wipe any stale globally-registered commands (e.g. from before guild-scoped $sync was
+        # introduced) without losing the local definitions that $sync copies into each guild.
+        global_commands = self.tree.get_commands(guild=None)
+        self.tree.clear_commands(guild=None)
+        await self.tree.sync()
+        for command in global_commands:
+            self.tree.add_command(command)
+        logger.info("Cleared any stale global slash commands; run $sync in each server to publish commands there.")
 
     async def on_ready(self) -> None:
         if self.user:
