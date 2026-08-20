@@ -105,6 +105,29 @@ class GHLRecheckCog(commands.Cog):
             )
             return
 
+        if contact is not None:
+            try:
+                linked_discord_id = await self.bot.ghl_client.get_linked_discord_id(contact)
+            except Exception:
+                logger.exception(
+                    "GHL recheck: failed to check linked Discord ID for member %s (%s) in guild %s",
+                    member.id,
+                    email,
+                    guild.id,
+                )
+                return
+
+            if linked_discord_id != member.id:
+                logger.info(
+                    "GHL recheck skipped for member %s (%s) in guild %s: "
+                    "GHL contact's Discord ID field is %s, not bound to this member",
+                    member.id,
+                    email,
+                    guild.id,
+                    linked_discord_id,
+                )
+                return
+
         current_tags = {
             tag.strip().lower() for tag in ((contact.get("tags") if contact else None) or [])
         }
