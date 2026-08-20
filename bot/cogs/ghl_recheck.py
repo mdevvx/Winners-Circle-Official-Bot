@@ -130,6 +130,66 @@ class GHLRecheckCog(commands.Cog):
             discord.Color.gold(),
         )
 
+    @app_commands.command(
+        name="ghl_members",
+        description="List members with their GHL subscription tags and roles, optionally filtered by role (admin only).",
+    )
+    @app_commands.describe(role="Only show members holding this role. Omit to show everyone the recheck loop tracks.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ghl_members(
+        self, interaction: discord.Interaction, role: discord.Role | None = None
+    ) -> None:
+        assert interaction.guild is not None
+        guild = interaction.guild
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        tag_roles = self.bot.settings.ghl_tag_roles
+        tag_role_ids = set(tag_roles.values())
+        verified = await self.bot.verified_member_store.get_all(guild.id)
+
+        if role is not None:
+            candidates = [member for member in guild.members if role in member.roles]
+        else:
+            candidates = [
+                member
+                for member in guild.members
+                if member.id in verified or any(r.id in tag_role_ids for r in member.roles)
+            ]
+
+        candidates.sort(key=lambda m: m.display_name.lower())
+
+        lines: list[str] = []
+        for member in candidates:
+            try:
+                contact = await self._resolve_contact_for_member(member, verified)
+            except Exception:
+                logger.exception("ghl_members: lookup failed for member %s in guild %s", member.id, guild.id)
+                contact = None
+
+            tags_text = ", ".join(sorted(contact.get("tags") or [])) if contact else "no GHL contact found"
+            held = [r.name for r in member.roles if r.id in tag_role_ids]
+            roles_text = ", ".join(held) if held else "none"
+            lines.append(f"{member.mention} — **tags:** {tags_text} — **roles:** {roles_text}")
+
+        title = f"GHL Members — #{role.name}" if role is not None else "GHL Members — All Tracked"
+        embed = discord.Embed(title=title, color=discord.Color.blurple())
+        embed.add_field(name="Count", value=str(len(candidates)), inline=True)
+        embed.add_field(
+            name="Members",
+            value=self._format_lines(lines, max_items=25) or "None found.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Guild ID: {guild.id}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _resolve_contact_for_member(self, member: discord.Member, verified: dict) -> dict | None:
+        """Read-only lookup of a member's GHL contact — by known email first, then by reverse
+        Discord ID search. Unlike the recheck passes, this never writes anything back."""
+        entry = verified.get(member.id)
+        if entry is not None:
+            return await self.bot.ghl_client.get_contact_by_email(entry.email)
+        return await self.bot.ghl_client.get_contact_by_discord_id(member.id)
+
     def _build_summary_embed(
         self, guild: discord.Guild, outcomes: list[MemberOutcome]
     ) -> discord.Embed:
