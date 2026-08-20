@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 RECHECK_INTERVAL_HOURS = 4
 MAX_LISTED_MEMBERS = 15
+MEMBERS_PAGE_SIZE = 10
 
 
 @dataclass
@@ -21,6 +22,86 @@ class MemberOutcome:
     added: list[discord.Role] = field(default_factory=list)
     removed: list[discord.Role] = field(default_factory=list)
     skipped_reason: str | None = None
+
+
+class MembersPaginatorView(discord.ui.View):
+    """Paginates a pre-fetched (member, GHL contact) list, 10 per page, for /ghl_members."""
+
+    def __init__(
+        self,
+        guild: discord.Guild,
+        role: discord.Role | None,
+        entries: list[tuple[discord.Member, dict | None]],
+        tag_role_ids: set[int],
+        invoker_id: int,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.guild = guild
+        self.role = role
+        self.entries = entries
+        self.tag_role_ids = tag_role_ids
+        self.invoker_id = invoker_id
+        self.page = 0
+        self.total_pages = max(1, -(-len(entries) // MEMBERS_PAGE_SIZE))
+        self.message: discord.WebhookMessage | None = None
+        self._update_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can navigate it.", ephemeral=True
+            )
+            return False
+        return True
+
+    def _update_buttons(self) -> None:
+        self.previous_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= self.total_pages - 1
+
+    def build_embed(self) -> discord.Embed:
+        title = f"GHL Members — #{self.role.name}" if self.role is not None else "GHL Members — All Tracked"
+        embed = discord.Embed(title=title, color=discord.Color.blurple())
+        embed.description = f"**{len(self.entries)}** member(s) tracked"
+
+        start = self.page * MEMBERS_PAGE_SIZE
+        for member, contact in self.entries[start : start + MEMBERS_PAGE_SIZE]:
+            if contact is None:
+                tags_text = "*no GHL contact found*"
+            else:
+                tags = sorted(contact.get("tags") or [])
+                tags_text = ", ".join(tags) if tags else "*no tags*"
+
+            held = sorted(r.name for r in member.roles if r.id in self.tag_role_ids)
+            roles_text = ", ".join(held) if held else "*none*"
+
+            value = f"{member.mention}\n**Tags:** {tags_text}\n**Roles:** {roles_text}"
+            if len(value) > 1024:
+                value = value[:1000] + "…"
+            embed.add_field(name=member.display_name, value=value, inline=False)
+
+        embed.set_footer(text=f"Guild ID: {self.guild.id} • Page {self.page + 1}/{self.total_pages}")
+        return embed
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 
 class GHLRecheckCog(commands.Cog):
@@ -158,29 +239,20 @@ class GHLRecheckCog(commands.Cog):
 
         candidates.sort(key=lambda m: m.display_name.lower())
 
-        lines: list[str] = []
+        entries: list[tuple[discord.Member, dict | None]] = []
         for member in candidates:
             try:
                 contact = await self._resolve_contact_for_member(member, verified)
             except Exception:
                 logger.exception("ghl_members: lookup failed for member %s in guild %s", member.id, guild.id)
                 contact = None
+            entries.append((member, contact))
 
-            tags_text = ", ".join(sorted(contact.get("tags") or [])) if contact else "no GHL contact found"
-            held = [r.name for r in member.roles if r.id in tag_role_ids]
-            roles_text = ", ".join(held) if held else "none"
-            lines.append(f"{member.mention} — **tags:** {tags_text} — **roles:** {roles_text}")
-
-        title = f"GHL Members — #{role.name}" if role is not None else "GHL Members — All Tracked"
-        embed = discord.Embed(title=title, color=discord.Color.blurple())
-        embed.add_field(name="Count", value=str(len(candidates)), inline=True)
-        embed.add_field(
-            name="Members",
-            value=self._format_lines(lines, max_items=25) or "None found.",
-            inline=False,
+        view = MembersPaginatorView(guild, role, entries, tag_role_ids, interaction.user.id)
+        message = await interaction.followup.send(
+            embed=view.build_embed(), view=view, ephemeral=True, wait=True
         )
-        embed.set_footer(text=f"Guild ID: {guild.id}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        view.message = message
 
     async def _resolve_contact_for_member(self, member: discord.Member, verified: dict) -> dict | None:
         """Read-only lookup of a member's GHL contact — by known email first, then by reverse
