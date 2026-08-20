@@ -173,23 +173,38 @@ class GHLRecheckCog(commands.Cog):
     def _format_outcomes(outcomes: list[MemberOutcome], roles_of) -> str:
         lines = [
             f"{outcome.member.mention}: {', '.join(role.mention for role in roles_of(outcome))}"
-            for outcome in outcomes[:MAX_LISTED_MEMBERS]
+            for outcome in outcomes
         ]
-        if len(outcomes) > MAX_LISTED_MEMBERS:
-            lines.append(f"...and {len(outcomes) - MAX_LISTED_MEMBERS} more")
-        text = "\n".join(lines)
-        return text[:1024]
+        return GHLRecheckCog._format_lines(lines)
 
     @staticmethod
     def _format_skipped(outcomes: list[MemberOutcome]) -> str:
-        lines = [
-            f"{outcome.member.mention}: {outcome.skipped_reason}"
-            for outcome in outcomes[:MAX_LISTED_MEMBERS]
-        ]
-        if len(outcomes) > MAX_LISTED_MEMBERS:
-            lines.append(f"...and {len(outcomes) - MAX_LISTED_MEMBERS} more")
-        text = "\n".join(lines)
-        return text[:1024]
+        lines = [f"{outcome.member.mention}: {outcome.skipped_reason}" for outcome in outcomes]
+        return GHLRecheckCog._format_lines(lines)
+
+    @staticmethod
+    def _format_lines(lines: list[str], max_items: int = MAX_LISTED_MEMBERS) -> str:
+        """Joins lines up to max_items and Discord's 1024-char embed field limit, cutting at a
+        line boundary (never mid-line) and appending an accurate '...and N more' count."""
+        if not lines:
+            return ""
+
+        included: list[str] = []
+        for line in lines[:max_items]:
+            trial = included + [line]
+            remaining = len(lines) - len(trial)
+            suffix = f"\n...and {remaining} more" if remaining else ""
+            if len("\n".join(trial)) + len(suffix) <= 1024:
+                included = trial
+            else:
+                remaining = len(lines) - len(included)
+                included.append(f"...and {remaining} more")
+                return "\n".join(included)
+
+        remaining = len(lines) - len(included)
+        if remaining:
+            included.append(f"...and {remaining} more")
+        return "\n".join(included)
 
     async def cog_app_command_error(
         self,
@@ -224,6 +239,29 @@ class GHLRecheckCog(commands.Cog):
             return {}
 
         tag_role_ids = set(tag_roles.values())
+
+        try:
+            linked_contacts = await self.bot.ghl_client.list_discord_linked_contacts()
+        except Exception:
+            logger.exception(
+                "GHL recheck: failed to list Discord-linked contacts; role-holders with no "
+                "local record will be skipped this cycle"
+            )
+            linked_contacts = []
+
+        discord_id_to_contact: dict[int, dict] = {}
+        for contact in linked_contacts:
+            try:
+                discord_id = await self.bot.ghl_client.get_linked_discord_id(contact)
+            except Exception:
+                continue
+            if discord_id is not None:
+                discord_id_to_contact[discord_id] = contact
+
+        logger.info(
+            "GHL recheck: found %s GHL contact(s) with a bound Discord ID", len(discord_id_to_contact)
+        )
+
         results: dict[int, list[MemberOutcome]] = {}
         checked = 0
         for guild in self.bot.guilds:
@@ -268,8 +306,9 @@ class GHLRecheckCog(commands.Cog):
 
                 handled_member_ids.add(member.id)
                 checked += 1
+                contact = discord_id_to_contact.get(member.id)
                 try:
-                    outcome = await self._recheck_member_by_discord_id(guild, member, tag_roles)
+                    outcome = await self._recheck_member_by_discord_id(guild, member, contact, tag_roles)
                 except Exception:
                     logger.exception(
                         "GHL recheck (by Discord ID) failed unexpectedly for member %s in guild %s",
@@ -353,20 +392,11 @@ class GHLRecheckCog(commands.Cog):
         self,
         guild: discord.Guild,
         member: discord.Member,
+        contact: dict | None,
         tag_roles: dict[str, int],
     ) -> MemberOutcome:
-        """Rechecks a member who holds a tag-role but has no local verification record, by
-        reverse-searching GHL for a contact whose Discord ID field matches them."""
-        try:
-            contact = await self.bot.ghl_client.get_contact_by_discord_id(member.id)
-        except Exception:
-            logger.exception(
-                "GHL recheck: reverse lookup by Discord ID failed for member %s in guild %s",
-                member.id,
-                guild.id,
-            )
-            return MemberOutcome(member=member, skipped_reason="GHL reverse lookup failed")
-
+        """Rechecks a member who holds a tag-role but has no local verification record, using a
+        GHL contact already matched by Discord ID from list_discord_linked_contacts()."""
         if contact is None:
             return MemberOutcome(
                 member=member,

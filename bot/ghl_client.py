@@ -99,39 +99,83 @@ class GHLClient:
                     )
                     response.raise_for_status()
 
-    async def get_contact_by_discord_id(self, discord_id: int) -> dict[str, Any] | None:
-        """Returns the full GHL contact record whose 'Discord ID' custom field matches, or None.
+    async def list_discord_linked_contacts(self) -> list[dict[str, Any]]:
+        """Returns every GHL contact that has the 'Discord ID' custom field populated.
 
+        GHL's plain-text `query` search (used by get_contact_by_email) does not search custom
+        field values, so contacts can't be reverse-looked-up by Discord ID that way. Instead this
+        pages through every contact in the location with no query filter (the same endpoint and
+        auth already proven to work for email lookups) and filters for the field client-side.
         Used to recheck members who hold a tag-role but have no local record of the email they
         verified with (e.g. the role predates this bot, or the local record was lost).
         """
         field_id = await self._get_discord_id_field_id()
         if field_id is None:
-            return None
+            return []
 
-        params = {"locationId": self._settings.ghl_location_id, "query": str(discord_id)}
+        linked: list[dict[str, Any]] = []
+        seen_contact_ids: set[str] = set()
+        start_after_id: str | None = None
+        start_after: str | None = None
+        page_limit = 100
+        max_pages = 50
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{BASE_URL}/contacts/",
-                headers=self._headers(),
-                params=params,
-            ) as response:
-                if response.status != 200:
-                    body = await response.text()
-                    logger.warning(
-                        "GHL contact search by Discord ID failed (status %s): %s", response.status, body
+            for page_index in range(max_pages):
+                params: dict[str, Any] = {
+                    "locationId": self._settings.ghl_location_id,
+                    "limit": page_limit,
+                }
+                if start_after_id and start_after:
+                    params["startAfterId"] = start_after_id
+                    params["startAfter"] = start_after
+
+                try:
+                    async with session.get(
+                        f"{BASE_URL}/contacts/",
+                        headers=self._headers(),
+                        params=params,
+                    ) as response:
+                        if response.status != 200:
+                            body = await response.text()
+                            logger.warning(
+                                "GHL contacts list failed (status %s): %s", response.status, body
+                            )
+                            response.raise_for_status()
+
+                        data = await response.json()
+                except Exception:
+                    if page_index == 0:
+                        raise
+                    logger.exception(
+                        "GHL contacts list: page %s failed, returning %s contact(s) found so far",
+                        page_index,
+                        len(linked),
                     )
-                    response.raise_for_status()
+                    break
 
-                data = await response.json()
+                contacts = data.get("contacts", [])
+                new_contacts = [c for c in contacts if c.get("id") not in seen_contact_ids]
+                if not new_contacts:
+                    break
 
-        for contact in data.get("contacts", []):
-            for cf in contact.get("customFields") or []:
-                if cf.get("id") == field_id and str(cf.get("value")) == str(discord_id):
-                    return contact
+                for contact in new_contacts:
+                    seen_contact_ids.add(contact["id"])
+                    for cf in contact.get("customFields") or []:
+                        if cf.get("id") == field_id and cf.get("value"):
+                            linked.append(contact)
+                            break
 
-        return None
+                if len(contacts) < page_limit:
+                    break
+
+                last = new_contacts[-1]
+                start_after_id = last.get("id")
+                start_after = str(last.get("dateAdded") or "")
+                if not start_after_id:
+                    break
+
+        return linked
 
     async def get_contact_by_email(self, email: str) -> dict[str, Any] | None:
         """Returns the full GHL contact record (including tags) for the given email, or None if not found."""
