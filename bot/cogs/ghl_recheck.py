@@ -11,7 +11,7 @@ from bot.bot import MoreThanScalingBot
 
 logger = logging.getLogger(__name__)
 
-RECHECK_INTERVAL_HOURS = 6
+RECHECK_INTERVAL_HOURS = 4
 MAX_LISTED_MEMBERS = 15
 
 
@@ -48,6 +48,88 @@ class GHLRecheckCog(commands.Cog):
         embed = self._build_summary_embed(interaction.guild, outcomes)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @app_commands.command(
+        name="ghl_link_member",
+        description="Link a Discord member to a GHL contact by email and sync their roles now (admin only).",
+    )
+    @app_commands.describe(
+        member="The Discord member to link.",
+        email="The email of their GHL contact.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ghl_link_member(
+        self, interaction: discord.Interaction, member: discord.Member, email: str
+    ) -> None:
+        assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        email = email.strip().lower()
+        try:
+            contact = await self.bot.ghl_client.get_contact_by_email(email)
+        except Exception:
+            logger.exception("ghl_link_member: GHL lookup failed for %s", email)
+            await interaction.followup.send(
+                "⚠️ Failed to reach GoHighLevel. Check the token/scopes and try again.", ephemeral=True
+            )
+            return
+
+        if contact is None:
+            await interaction.followup.send(f"❌ No GHL contact found for `{email}`.", ephemeral=True)
+            return
+
+        try:
+            existing_link = await self.bot.ghl_client.get_linked_discord_id(contact)
+        except Exception:
+            logger.exception("ghl_link_member: failed to read existing Discord ID link for %s", email)
+            existing_link = None
+
+        if existing_link is not None and existing_link != member.id:
+            await interaction.followup.send(
+                f"❌ `{email}` is already linked to a different Discord account (`{existing_link}`). "
+                "Update the 'Discord ID' field in GHL first if this is a mistake.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await self.bot.ghl_client.set_contact_discord_id(contact["id"], member.id)
+        except Exception:
+            logger.exception("ghl_link_member: failed to write Discord ID for contact %s", contact.get("id"))
+            await interaction.followup.send(
+                "⚠️ Failed to write the Discord ID back to GHL. Nothing was changed.", ephemeral=True
+            )
+            return
+
+        await self.bot.verified_member_store.set_verified(interaction.guild.id, member.id, email)
+
+        tag_roles = self.bot.settings.ghl_tag_roles
+        outcome = (
+            await self._recheck_member(interaction.guild, member, email, tag_roles)
+            if tag_roles
+            else MemberOutcome(member=member, skipped_reason="No GHL_TAG_ROLES configured")
+        )
+
+        embed = discord.Embed(title="GHL Member Linked", color=discord.Color.gold())
+        embed.add_field(name="Member", value=member.mention, inline=True)
+        embed.add_field(name="Email", value=email, inline=True)
+        embed.add_field(
+            name="Roles Added",
+            value=", ".join(role.mention for role in outcome.added) or "None",
+            inline=False,
+        )
+        embed.add_field(
+            name="Roles Removed",
+            value=", ".join(role.mention for role in outcome.removed) or "None",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self.bot.send_activity_log(
+            interaction.guild,
+            "GHL Member Manually Linked",
+            f"{interaction.user.mention} linked {member.mention} to GHL contact `{email}` and synced roles.",
+            discord.Color.gold(),
+        )
+
     def _build_summary_embed(
         self, guild: discord.Guild, outcomes: list[MemberOutcome]
     ) -> discord.Embed:
@@ -63,7 +145,7 @@ class GHLRecheckCog(commands.Cog):
         embed.add_field(name="Members Checked", value=str(len(outcomes)), inline=True)
         embed.add_field(name="Roles Added", value=str(len(added)), inline=True)
         embed.add_field(name="Roles Removed", value=str(len(removed)), inline=True)
-        embed.add_field(name="Skipped (Discord ID not bound)", value=str(len(skipped)), inline=True)
+        embed.add_field(name="Skipped", value=str(len(skipped)), inline=True)
         embed.add_field(name="No Change", value=str(unchanged), inline=True)
 
         embed.add_field(
@@ -141,6 +223,7 @@ class GHLRecheckCog(commands.Cog):
             logger.info("GHL recheck skipped: no GHL_TAG_ROLES configured")
             return {}
 
+        tag_role_ids = set(tag_roles.values())
         results: dict[int, list[MemberOutcome]] = {}
         checked = 0
         for guild in self.bot.guilds:
@@ -152,11 +235,14 @@ class GHLRecheckCog(commands.Cog):
             )
 
             guild_outcomes: list[MemberOutcome] = []
+            handled_member_ids: set[int] = set()
+
             for member in guild.members:
                 verified_entry = verified.get(member.id)
                 if verified_entry is None:
                     continue
 
+                handled_member_ids.add(member.id)
                 checked += 1
                 try:
                     outcome = await self._recheck_member(guild, member, verified_entry.email, tag_roles)
@@ -165,6 +251,29 @@ class GHLRecheckCog(commands.Cog):
                         "GHL recheck failed unexpectedly for member %s (%s) in guild %s",
                         member.id,
                         verified_entry.email,
+                        guild.id,
+                    )
+                    outcome = MemberOutcome(member=member, skipped_reason="Unexpected error, see logs")
+                guild_outcomes.append(outcome)
+
+            # Catch anyone holding a configured tag-role with no local verification record on
+            # file (role predates this bot's tracking, or the record was lost) — reverse-look
+            # them up in GHL by Discord ID instead of requiring an email, so no admin has to
+            # manually relink them.
+            for member in guild.members:
+                if member.id in handled_member_ids:
+                    continue
+                if not any(role.id in tag_role_ids for role in member.roles):
+                    continue
+
+                handled_member_ids.add(member.id)
+                checked += 1
+                try:
+                    outcome = await self._recheck_member_by_discord_id(guild, member, tag_roles)
+                except Exception:
+                    logger.exception(
+                        "GHL recheck (by Discord ID) failed unexpectedly for member %s in guild %s",
+                        member.id,
                         guild.id,
                     )
                     outcome = MemberOutcome(member=member, skipped_reason="Unexpected error, see logs")
@@ -182,6 +291,7 @@ class GHLRecheckCog(commands.Cog):
         email: str,
         tag_roles: dict[str, int],
     ) -> MemberOutcome:
+        """Rechecks a member whose email is already on file from a completed /verify."""
         try:
             contact = await self.bot.ghl_client.get_contact_by_email(email)
         except Exception:
@@ -205,22 +315,77 @@ class GHLRecheckCog(commands.Cog):
                 )
                 return MemberOutcome(member=member, skipped_reason="Discord ID lookup failed")
 
-            if linked_discord_id != member.id:
+            if linked_discord_id is None:
+                # Not bound yet (e.g. verified before GHL linking existed). We already trust
+                # this email<->member pairing since it's our own verified record, so bind it
+                # now instead of requiring manual admin action.
+                try:
+                    await self.bot.ghl_client.set_contact_discord_id(contact["id"], member.id)
+                    logger.info(
+                        "GHL recheck: auto-linked Discord ID for member %s (%s) in guild %s",
+                        member.id,
+                        email,
+                        guild.id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "GHL recheck: failed to auto-link Discord ID for member %s (%s) in guild %s",
+                        member.id,
+                        email,
+                        guild.id,
+                    )
+            elif linked_discord_id != member.id:
                 logger.info(
                     "GHL recheck skipped for member %s (%s) in guild %s: "
-                    "GHL contact's Discord ID field is %s, not bound to this member",
+                    "GHL contact's Discord ID field is bound to a different Discord account (%s)",
                     member.id,
                     email,
                     guild.id,
                     linked_discord_id,
                 )
-                reason = (
-                    "Discord ID not bound in GHL"
-                    if linked_discord_id is None
-                    else "GHL contact linked to a different Discord account"
+                return MemberOutcome(
+                    member=member, skipped_reason="GHL contact linked to a different Discord account"
                 )
-                return MemberOutcome(member=member, skipped_reason=reason)
 
+        return await self._apply_tag_roles(guild, member, contact, tag_roles)
+
+    async def _recheck_member_by_discord_id(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        tag_roles: dict[str, int],
+    ) -> MemberOutcome:
+        """Rechecks a member who holds a tag-role but has no local verification record, by
+        reverse-searching GHL for a contact whose Discord ID field matches them."""
+        try:
+            contact = await self.bot.ghl_client.get_contact_by_discord_id(member.id)
+        except Exception:
+            logger.exception(
+                "GHL recheck: reverse lookup by Discord ID failed for member %s in guild %s",
+                member.id,
+                guild.id,
+            )
+            return MemberOutcome(member=member, skipped_reason="GHL reverse lookup failed")
+
+        if contact is None:
+            return MemberOutcome(
+                member=member,
+                skipped_reason="Holds a tag-role but no linked GHL contact found — ask them to re-verify",
+            )
+
+        email = (contact.get("email") or "").strip().lower()
+        if email:
+            await self.bot.verified_member_store.set_verified(guild.id, member.id, email)
+
+        return await self._apply_tag_roles(guild, member, contact, tag_roles)
+
+    async def _apply_tag_roles(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        contact: dict | None,
+        tag_roles: dict[str, int],
+    ) -> MemberOutcome:
         current_tags = {
             tag.strip().lower() for tag in ((contact.get("tags") if contact else None) or [])
         }

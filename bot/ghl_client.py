@@ -99,6 +99,40 @@ class GHLClient:
                     )
                     response.raise_for_status()
 
+    async def get_contact_by_discord_id(self, discord_id: int) -> dict[str, Any] | None:
+        """Returns the full GHL contact record whose 'Discord ID' custom field matches, or None.
+
+        Used to recheck members who hold a tag-role but have no local record of the email they
+        verified with (e.g. the role predates this bot, or the local record was lost).
+        """
+        field_id = await self._get_discord_id_field_id()
+        if field_id is None:
+            return None
+
+        params = {"locationId": self._settings.ghl_location_id, "query": str(discord_id)}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{BASE_URL}/contacts/",
+                headers=self._headers(),
+                params=params,
+            ) as response:
+                if response.status != 200:
+                    body = await response.text()
+                    logger.warning(
+                        "GHL contact search by Discord ID failed (status %s): %s", response.status, body
+                    )
+                    response.raise_for_status()
+
+                data = await response.json()
+
+        for contact in data.get("contacts", []):
+            for cf in contact.get("customFields") or []:
+                if cf.get("id") == field_id and str(cf.get("value")) == str(discord_id):
+                    return contact
+
+        return None
+
     async def get_contact_by_email(self, email: str) -> dict[str, Any] | None:
         """Returns the full GHL contact record (including tags) for the given email, or None if not found."""
         email = email.strip().lower()

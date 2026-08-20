@@ -136,6 +136,14 @@ class AdminCog(commands.Cog):
             await interaction.followup.send(f"❌ No GHL contact found for `{email}`.", ephemeral=True)
             return
 
+        try:
+            linked_discord_id = await self.bot.ghl_client.get_linked_discord_id(contact)
+        except Exception:
+            logger.exception("ghl_lookup: failed to read linked Discord ID for %s", email)
+            linked_discord_id = None
+
+        discord_id_text = f"`{linked_discord_id}` (<@{linked_discord_id}>)" if linked_discord_id else "Not linked"
+
         raw = json.dumps(contact, indent=2)
         if len(raw) > 950:
             raw = raw[:950] + "\n... (truncated)"
@@ -144,6 +152,7 @@ class AdminCog(commands.Cog):
         embed = discord.Embed(title="GHL Contact Record", color=discord.Color.blurple())
         embed.add_field(name="Email", value=contact.get("email", "N/A"), inline=True)
         embed.add_field(name="Contact ID", value=contact.get("id", "N/A"), inline=True)
+        embed.add_field(name="Linked Discord ID", value=discord_id_text, inline=True)
         embed.add_field(name="Tags", value=tags, inline=False)
         embed.add_field(name="Raw Record", value=f"```json\n{raw}\n```", inline=False)
 
