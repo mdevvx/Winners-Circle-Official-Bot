@@ -59,9 +59,9 @@ class MembersPaginatorView(discord.ui.View):
         self.next_page.disabled = self.page >= self.total_pages - 1
 
     def build_embed(self) -> discord.Embed:
-        title = f"GHL Members — #{self.role.name}" if self.role is not None else "GHL Members — All Tracked"
-        embed = discord.Embed(title=title, color=discord.Color.blurple())
-        embed.description = f"**{len(self.entries)}** member(s) tracked"
+        embed = discord.Embed(title="GHL Members", color=discord.Color.blurple())
+        filter_text = f"Filtered by {self.role.mention} · " if self.role is not None else ""
+        embed.description = f"{filter_text}**{len(self.entries)}** member(s) tracked"
 
         start = self.page * MEMBERS_PAGE_SIZE
         for member, contact in self.entries[start : start + MEMBERS_PAGE_SIZE]:
@@ -71,8 +71,10 @@ class MembersPaginatorView(discord.ui.View):
                 tags = sorted(contact.get("tags") or [])
                 tags_text = ", ".join(tags) if tags else "*no tags*"
 
-            held = sorted(r.name for r in member.roles if r.id in self.tag_role_ids)
-            roles_text = ", ".join(held) if held else "*none*"
+            held_roles = sorted(
+                (r for r in member.roles if r.id in self.tag_role_ids), key=lambda r: r.name.lower()
+            )
+            roles_text = ", ".join(r.mention for r in held_roles) if held_roles else "*none*"
 
             value = f"{member.mention}\n**Tags:** {tags_text}\n**Roles:** {roles_text}"
             if len(value) > 1024:
