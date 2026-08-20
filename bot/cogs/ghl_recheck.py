@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import logging
 
 import discord
@@ -11,6 +12,15 @@ from bot.bot import MoreThanScalingBot
 logger = logging.getLogger(__name__)
 
 RECHECK_INTERVAL_HOURS = 6
+MAX_LISTED_MEMBERS = 15
+
+
+@dataclass
+class MemberOutcome:
+    member: discord.Member
+    added: list[discord.Role] = field(default_factory=list)
+    removed: list[discord.Role] = field(default_factory=list)
+    skipped_reason: str | None = None
 
 
 class GHLRecheckCog(commands.Cog):
@@ -24,9 +34,80 @@ class GHLRecheckCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def ghl_recheck_now(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await self.run_recheck()
-        await interaction.followup.send("GHL recheck cycle complete. Check the logs for details.", ephemeral=True)
+
+        if not self.bot.settings.ghl_tag_roles:
+            await interaction.followup.send(
+                "⚠️ No GHL_TAG_ROLES configured — nothing to recheck.", ephemeral=True
+            )
+            return
+
+        results = await self.run_recheck()
+        outcomes = results.get(interaction.guild.id, [])
+        embed = self._build_summary_embed(interaction.guild, outcomes)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    def _build_summary_embed(
+        self, guild: discord.Guild, outcomes: list[MemberOutcome]
+    ) -> discord.Embed:
+        added = [outcome for outcome in outcomes if outcome.added]
+        removed = [outcome for outcome in outcomes if outcome.removed]
+        skipped = [outcome for outcome in outcomes if outcome.skipped_reason]
+        unchanged = len(outcomes) - len(added) - len(removed) - len(skipped)
+
+        embed = discord.Embed(
+            title="GHL Recheck — Cycle Summary",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Members Checked", value=str(len(outcomes)), inline=True)
+        embed.add_field(name="Roles Added", value=str(len(added)), inline=True)
+        embed.add_field(name="Roles Removed", value=str(len(removed)), inline=True)
+        embed.add_field(name="Skipped (Discord ID not bound)", value=str(len(skipped)), inline=True)
+        embed.add_field(name="No Change", value=str(unchanged), inline=True)
+
+        embed.add_field(
+            name="✅ Added",
+            value=self._format_outcomes(added, lambda o: o.added) or "None",
+            inline=False,
+        )
+        embed.add_field(
+            name="❌ Removed",
+            value=self._format_outcomes(removed, lambda o: o.removed) or "None",
+            inline=False,
+        )
+        if skipped:
+            embed.add_field(
+                name="⏭️ Skipped",
+                value=self._format_skipped(skipped) or "None",
+                inline=False,
+            )
+
+        embed.set_footer(text=f"Guild ID: {guild.id}")
+        embed.timestamp = discord.utils.utcnow()
+        return embed
+
+    @staticmethod
+    def _format_outcomes(outcomes: list[MemberOutcome], roles_of) -> str:
+        lines = [
+            f"{outcome.member.mention}: {', '.join(role.mention for role in roles_of(outcome))}"
+            for outcome in outcomes[:MAX_LISTED_MEMBERS]
+        ]
+        if len(outcomes) > MAX_LISTED_MEMBERS:
+            lines.append(f"...and {len(outcomes) - MAX_LISTED_MEMBERS} more")
+        text = "\n".join(lines)
+        return text[:1024]
+
+    @staticmethod
+    def _format_skipped(outcomes: list[MemberOutcome]) -> str:
+        lines = [
+            f"{outcome.member.mention}: {outcome.skipped_reason}"
+            for outcome in outcomes[:MAX_LISTED_MEMBERS]
+        ]
+        if len(outcomes) > MAX_LISTED_MEMBERS:
+            lines.append(f"...and {len(outcomes) - MAX_LISTED_MEMBERS} more")
+        text = "\n".join(lines)
+        return text[:1024]
 
     async def cog_app_command_error(
         self,
@@ -54,12 +135,13 @@ class GHLRecheckCog(commands.Cog):
     async def recheck_loop(self) -> None:
         await self.run_recheck()
 
-    async def run_recheck(self) -> None:
+    async def run_recheck(self) -> dict[int, list[MemberOutcome]]:
         tag_roles = self.bot.settings.ghl_tag_roles
         if not tag_roles:
             logger.info("GHL recheck skipped: no GHL_TAG_ROLES configured")
-            return
+            return {}
 
+        results: dict[int, list[MemberOutcome]] = {}
         checked = 0
         for guild in self.bot.guilds:
             verified = await self.bot.verified_member_store.get_all(guild.id)
@@ -69,6 +151,7 @@ class GHLRecheckCog(commands.Cog):
                 len(verified),
             )
 
+            guild_outcomes: list[MemberOutcome] = []
             for member in guild.members:
                 verified_entry = verified.get(member.id)
                 if verified_entry is None:
@@ -76,7 +159,7 @@ class GHLRecheckCog(commands.Cog):
 
                 checked += 1
                 try:
-                    await self._recheck_member(guild, member, verified_entry.email, tag_roles)
+                    outcome = await self._recheck_member(guild, member, verified_entry.email, tag_roles)
                 except Exception:
                     logger.exception(
                         "GHL recheck failed unexpectedly for member %s (%s) in guild %s",
@@ -84,8 +167,13 @@ class GHLRecheckCog(commands.Cog):
                         verified_entry.email,
                         guild.id,
                     )
+                    outcome = MemberOutcome(member=member, skipped_reason="Unexpected error, see logs")
+                guild_outcomes.append(outcome)
+
+            results[guild.id] = guild_outcomes
 
         logger.info("GHL recheck cycle finished: %s verified member(s) checked", checked)
+        return results
 
     async def _recheck_member(
         self,
@@ -93,7 +181,7 @@ class GHLRecheckCog(commands.Cog):
         member: discord.Member,
         email: str,
         tag_roles: dict[str, int],
-    ) -> None:
+    ) -> MemberOutcome:
         try:
             contact = await self.bot.ghl_client.get_contact_by_email(email)
         except Exception:
@@ -103,7 +191,7 @@ class GHLRecheckCog(commands.Cog):
                 email,
                 guild.id,
             )
-            return
+            return MemberOutcome(member=member, skipped_reason="GHL lookup failed")
 
         if contact is not None:
             try:
@@ -115,7 +203,7 @@ class GHLRecheckCog(commands.Cog):
                     email,
                     guild.id,
                 )
-                return
+                return MemberOutcome(member=member, skipped_reason="Discord ID lookup failed")
 
             if linked_discord_id != member.id:
                 logger.info(
@@ -126,7 +214,12 @@ class GHLRecheckCog(commands.Cog):
                     guild.id,
                     linked_discord_id,
                 )
-                return
+                reason = (
+                    "Discord ID not bound in GHL"
+                    if linked_discord_id is None
+                    else "GHL contact linked to a different Discord account"
+                )
+                return MemberOutcome(member=member, skipped_reason=reason)
 
         current_tags = {
             tag.strip().lower() for tag in ((contact.get("tags") if contact else None) or [])
@@ -149,6 +242,8 @@ class GHLRecheckCog(commands.Cog):
             elif not tag_matches and has_role:
                 roles_to_remove.append(role)
 
+        outcome = MemberOutcome(member=member)
+
         if roles_to_remove:
             try:
                 await member.remove_roles(
@@ -161,6 +256,7 @@ class GHLRecheckCog(commands.Cog):
                     guild.id,
                     current_tags,
                 )
+                outcome.removed = roles_to_remove
                 await self.bot.send_activity_log(
                     guild,
                     "GHL Recheck — Role Removed",
@@ -187,6 +283,7 @@ class GHLRecheckCog(commands.Cog):
                     guild.id,
                     current_tags,
                 )
+                outcome.added = roles_to_add
                 await self.bot.send_activity_log(
                     guild,
                     "GHL Recheck — Role Added",
@@ -200,6 +297,8 @@ class GHLRecheckCog(commands.Cog):
                 )
             except discord.HTTPException:
                 logger.exception("Failed to add roles to member %s in guild %s", member.id, guild.id)
+
+        return outcome
 
     @recheck_loop.before_loop
     async def before_recheck_loop(self) -> None:

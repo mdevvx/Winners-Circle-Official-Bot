@@ -8,8 +8,11 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
-STATE_FILE = BASE_DIR / "data" / "bot-state.json"
-VERIFIED_MEMBERS_FILE = BASE_DIR / "data" / "verified-members.json"
+# Point DATA_DIR at a mounted persistent volume in production (e.g. Railway), otherwise
+# this resolves under the repo and state is lost on every redeploy's fresh filesystem.
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
+STATE_FILE = DATA_DIR / "bot-state.json"
+VERIFIED_MEMBERS_FILE = DATA_DIR / "verified-members.json"
 
 
 @dataclass(frozen=True)
