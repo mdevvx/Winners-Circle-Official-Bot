@@ -11,7 +11,7 @@ from bot.bot import MoreThanScalingBot
 
 logger = logging.getLogger(__name__)
 
-SUBSCRIBE_URL = "https://pajamabillionaire.com/"
+SUBSCRIBE_URL = "https://pajamabillionaire.com/subscribe/"
 
 
 def _outcome_embed(title: str, description: str) -> discord.Embed:
@@ -134,9 +134,7 @@ class EmailModal(discord.ui.Modal, title="Get Verify"):
                         verified_role, reason=f"Submitted verification form: {email}"
                     )
                 except discord.HTTPException:
-                    logger.exception(
-                        "Failed to assign verified role to %s", member.id
-                    )
+                    logger.exception("Failed to assign verified role to %s", member.id)
 
         try:
             contact = await self.bot.ghl_client.get_contact_by_email(email)
