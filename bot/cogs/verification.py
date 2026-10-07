@@ -45,7 +45,7 @@ class SubscribeView(discord.ui.View):
         )
 
 
-class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
+class EmailModal(discord.ui.Modal, title="Get Verify"):
     first_name_input = discord.ui.TextInput(
         label="First Name",
         placeholder="Enter your first name",
@@ -117,6 +117,26 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             phone = normalized_phone
 
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if self.bot.settings.verified_role_id:
+            verified_role = interaction.guild.get_role(
+                self.bot.settings.verified_role_id
+            )
+            if verified_role is None:
+                logger.warning(
+                    "Verified role %s is missing in guild %s",
+                    self.bot.settings.verified_role_id,
+                    interaction.guild.id,
+                )
+            elif verified_role not in member.roles:
+                try:
+                    await member.add_roles(
+                        verified_role, reason=f"Submitted verification form: {email}"
+                    )
+                except discord.HTTPException:
+                    logger.exception(
+                        "Failed to assign verified role to %s", member.id
+                    )
 
         try:
             contact = await self.bot.ghl_client.get_contact_by_email(email)
@@ -250,13 +270,6 @@ class EmailModal(discord.ui.Modal, title="Verify Your Membership"):
             role_mentions.append(role.mention)
             if role not in member.roles:
                 roles_to_add.append(role)
-
-        if self.bot.settings.verified_role_id:
-            verified_role = interaction.guild.get_role(
-                self.bot.settings.verified_role_id
-            )
-            if verified_role and verified_role not in member.roles:
-                roles_to_add.append(verified_role)
 
         await self.bot.verified_member_store.set_verified(
             interaction.guild.id, member.id, email
